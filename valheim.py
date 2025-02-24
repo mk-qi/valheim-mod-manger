@@ -267,25 +267,15 @@ class ModNameMatcher:
 
         # 2. 移除分隔符后匹配
         normalized = keyword.replace(' ', '').replace('-', '').replace('_', '')
-        for ts_id, original_id in self.processed_ids.items():
-            if original_id not in matches:  # 避免重复
-                ts_normalized = ts_id.replace(' ', '').replace('-', '').replace('_', '')
-                if normalized == ts_normalized:
-                    matches.append(original_id)
-                    scores[original_id] = self._calculate_match_score(original_id, keyword, version)
-
-        # 3. 相似度匹配
-        if len(matches) < 3:  # 如果还没找到足够的匹配
-            for ts_id in self.thunderstore_ids:
-                if ts_id not in matches:
-                    if '-' in ts_id:
-                        _, mod_name = ts_id.split('-', 1)
-                        similarity = self._similarity_score(normalized, 
-                                                         mod_name.replace('-', '').replace('_', ''))
-                        if similarity > 0.8:
-                            matches.append(ts_id)
-                            base_score = similarity
-                            scores[ts_id] = self._calculate_match_score(ts_id, keyword, version, base_score)
+        for ts_id in self.thunderstore_ids:
+            if ts_id not in matches:  # 避免重复
+                if '-' in ts_id:
+                    _, mod_name = ts_id.split('-', 1)
+                    # 使用原始的关键词和mod名称计算相似度
+                    similarity = self._similarity_score(keyword, mod_name)
+                    if similarity > 0.8:
+                        matches.append(ts_id)
+                        scores[ts_id] = self._calculate_match_score(ts_id, keyword, version, similarity)
 
         # 按分数排序
         matches.sort(key=lambda x: scores[x], reverse=True)
@@ -357,19 +347,20 @@ class ModNameMatcher:
         
         # 计算单词匹配的精确度
         if words1 and words2:
-            # 如果目标字符串包含额外的修饰词（如reborn, extended等），降低其分数
+            # 如果目标字符串包含额外的修饰词（如reborn, dvergr等），大幅降低其分数
             if len(words2) > len(words1):
                 extra_words = set(words2) - set(words1)
                 if extra_words:
-                    similarity = max(0.0, similarity - 0.1 * len(extra_words))
+                    # 对每个额外单词大幅降低分数
+                    similarity = max(0.0, similarity - 0.25 * len(extra_words))
             
             # 如果所有核心单词都匹配（不考虑顺序），增加分数
             if all(w in words2 for w in words1):
                 similarity = min(1.0, similarity + 0.15)
                 
-                # 如果目标字符串没有额外单词，进一步增加分数
-                if len(words1) == len(words2):
-                    similarity = min(1.0, similarity + 0.1)
+                # 如果是完全匹配（没有额外单词），给予显著加分
+                if len(words1) == len(words2) and set(words1) == set(words2):
+                    similarity = min(1.0, similarity + 0.3)
             
         # 5. 调整分数
         # 如果字符串较长（>10字符）且相似度较高（>0.8），给予额外加分
@@ -424,15 +415,19 @@ if __name__ == "__main__":
             unmatched_mods.append(keyword)
             continue
             
-        if len(matches) == 1:
-            matched_mods.append((keyword, matches[0]))
+        # 过滤掉低分匹配（分数小于1的）
+        high_score_matches = [(match, score) for match, score in matches if score >= 1.0]
+        
+        # 如果过滤后只剩一个匹配，或原本就只有一个匹配
+        if len(high_score_matches) == 1:
+            matched_mods.append((keyword, high_score_matches[0]))
             continue
             
         # 检查多重匹配中的版本匹配情况
         log_version = mods_with_versions[keyword]
         version_matches = []
         
-        for match, score in matches:
+        for match, score in high_score_matches:  # 只检查高分匹配的版本
             ts_versions = thunderstore_data[match]['versions']
             if log_version in ts_versions:
                 version_matches.append((match, score))
@@ -440,8 +435,10 @@ if __name__ == "__main__":
         # 如果只有一个版本匹配，将其视为确定的匹配
         if len(version_matches) == 1:
             matched_mods.append((keyword, version_matches[0]))
+        elif high_score_matches:  # 只有在有高分匹配时才添加到多重匹配
+            multiple_matches.append((keyword, high_score_matches))
         else:
-            multiple_matches.append((keyword, matches))
+            unmatched_mods.append(keyword)  # 如果没有高分匹配，视为未匹配
     
     # 打印统计信息
     total = len(mapping)
